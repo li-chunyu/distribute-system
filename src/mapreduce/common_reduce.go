@@ -1,5 +1,13 @@
 package mapreduce
 
+import (
+	"os"
+	"io"
+	"log"
+	"encoding/json"
+	"sort"
+)
+
 func doReduce(
 	jobName string, // the name of the whole MapReduce job
 	reduceTask int, // which reduce task this is
@@ -44,4 +52,37 @@ func doReduce(
 	//
 	// Your code here (Part I).
 	//
+	kvMap := make(map[string]([]string))
+	for mapTaskNum := 0; mapTaskNum < nMap; mapTaskNum++ {
+		interFileName := reduceName(jobName, mapTaskNum, reduceTask)
+		f, err := os.Open(interFileName)
+		if err != nil {
+			log.Fatal("Reduce can't read file", interFileName)
+		}
+		defer f.Close()
+		dec := json.NewDecoder(f)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err == io.EOF {
+				break;
+			} else if err != nil {
+				log.Fatal("Reduce:", err)
+			}
+			kvMap[kv.Key] = append(kvMap[kv.Key], kv.Value)
+		}
+	}
+	keys := make([]string, 0, len(kvMap))
+	for k, _ := range kvMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	oF, err := os.Create(outFile)
+	defer oF.Close()
+	if err != nil {
+		log.Fatal("Reduce: can't create file", outFile)
+	}
+	enc := json.NewEncoder(oF)
+	for _, key := range keys {
+		enc.Encode(KeyValue{key, reduceF(key, kvMap[key])})
+	}
 }
