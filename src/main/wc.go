@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"mapreduce"
 	"os"
+	"strconv"
+	"strings"
+	"unicode"
+	"log"
 )
 
 //
@@ -13,8 +17,29 @@ import (
 // and look only at the contents argument. The return value is a slice
 // of key/value pairs.
 //
+// kvs: Return KeyValues that KeyValue.Key is the word and KeyValue.Key is 
+// the count of the word in contents for each word in contents.
 func mapF(filename string, contents string) []mapreduce.KeyValue {
 	// Your code here (Part II).
+	f := func(c rune) bool {
+		return !unicode.IsLetter(c)
+	}
+	words := strings.FieldsFunc(contents, f)
+	var kvs []mapreduce.KeyValue
+	// map word to number of word
+	m := make(map[string]int)
+	for _, w := range words {
+		_, ok := m[w]
+		if ok {
+			m[w] += 1
+		} else {
+			m[w] = 1
+		}
+	}
+	for word, times := range m {
+		kvs = append(kvs, mapreduce.KeyValue{word, strconv.Itoa(times)})
+	}
+	return kvs
 }
 
 //
@@ -24,6 +49,15 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 //
 func reduceF(key string, values []string) string {
 	// Your code here (Part II).
+	ret := 0
+	for _, t := range values {
+		i, err := strconv.Atoi(t)
+		if err != nil {
+			log.Fatal("reduceF: strconv.Atoi fail.")
+		}
+		ret += i
+	}
+	return strconv.Itoa(ret)
 }
 
 // Can be run in 3 ways:
