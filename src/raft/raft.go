@@ -105,7 +105,7 @@ func (rf *Raft) Vote() {
 	rf.state = CANDIDATE
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
-	rf.voteCount += 1
+	rf.voteCount = 1
 	rf.mu.Unlock()
 	args := RequestVoteArgs {
 		Term: rf.currentTerm,
@@ -163,7 +163,6 @@ func (rf *Raft) Vote() {
 	// 当 vote（）返回时，该 server 会立即发起一次投票（如果其他人当选那么就是多余的）
 	rf.lastTimeRecHeartBeat = GetNowTime()
 	rf.back2Follower(rf.currentTerm)
-	rf.voteCount = 0
 	return
 }
 
@@ -244,6 +243,26 @@ type RequestVoteReply struct {
 	VoteGranted bool // true means candidate reveived vote.
 }
 
+func (rf *Raft) isMoreUpToDate(args *RequestVoteArgs) bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if len(rf.logs) == 0 {
+		return true
+	}
+	if args.LastLogTerm > rf.logs[len(rf.logs)-1].Term {
+		return true
+	} else if args.LastLogTerm == rf.logs[len(rf.logs)-1].Term {
+
+		if args.LastLogIndex > (len(rf.logs) - 1) {
+			return true
+		} else {
+			return false
+		}
+	} else {
+		return false
+	}
+}
+
 //
 // example RequestVote RPC handler.
 //
@@ -257,7 +276,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.lastTimeRecHeartBeat = GetNowTime()
 	if args.Term < rf.currentTerm {
 		return;
-	} else if args.Term > rf.currentTerm {
+	}
+
+	if !rf.isMoreUpToDate(args) {
+		return
+	}
+
+	if args.Term > rf.currentTerm {
 		reply.VoteGranted = true
 
 		rf.mu.Lock()
