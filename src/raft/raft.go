@@ -93,8 +93,6 @@ type Raft struct {
 }
 
 func (rf *Raft) back2Follower(term int) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.currentTerm = term
 	rf.state = FOLLOWER
 	rf.leaderElectionCond.Signal()
@@ -244,8 +242,6 @@ type RequestVoteReply struct {
 }
 
 func (rf *Raft) isMoreUpToDate(args *RequestVoteArgs) bool {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	if len(rf.logs) == 0 {
 		return true
 	}
@@ -267,6 +263,8 @@ func (rf *Raft) isMoreUpToDate(args *RequestVoteArgs) bool {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	// Your code here (2A, 2B).
 	DPrintf("<RequestVote>: FROM [ID:%d, TERM:%d] TO [ID:%d, TERM:%d]",
 			args.CandidateId, args.Term, rf.me, rf.currentTerm)
@@ -284,11 +282,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term > rf.currentTerm {
 		reply.VoteGranted = true
-
-		rf.mu.Lock()
 		rf.votedFor = args.CandidateId
-		rf.mu.Unlock()
-
 		rf.back2Follower(args.Term)
 		DPrintf("<RequestVote>: [ID:%d, TERM:%d] votes to [ID:%d, TERM:%d]\n",
 				rf.me, rf.currentTerm, args.CandidateId, args.Term)
@@ -353,15 +347,15 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	// Your code here (2A, 2B).
 	DPrintf("<AppendEntries>: Heart Beat. FROM [ID:%d, TERM:%d] TO [ID:%d, TERM:%d]",
 			args.LeaderId, args.Term, rf.me, rf.currentTerm)
 	rf.lastTimeRecHeartBeat = GetNowTime()
 	if rf.currentTerm < args.Term {
 		rf.back2Follower(args.Term)
-		rf.mu.Lock()
 		rf.votedFor = -1
-		rf.mu.Unlock()
 	}
 }
 
