@@ -1,3 +1,7 @@
 pkg/
 api.key
 *-handin.tar.gz
+*.log
+.idea
+bin
+6.824.code-workspace
