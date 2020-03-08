@@ -7,6 +7,7 @@ import "time"
 const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
+	log.SetFlags(log.Lmicroseconds)
 	if Debug > 0 {
 		log.Printf(format, a...)
 	}
