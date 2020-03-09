@@ -17,27 +17,13 @@ package raft
 //   in the same server.
 //
 
-import (
-	"labrpc"
-	"math/rand"
-	"sync"
-	"sync/atomic"
-	"time"
-)
+import "sync"
+import "labrpc"
 
 // import "bytes"
 // import "labgob"
 
-const FOLLOWER = 1
-const CANDIDATE = 2
-const LEADER = 3
 
-const HBPERIODIC = 100
-
-type LogEntry struct {
-	Command interface{}
-	Term    int
-}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -64,120 +50,11 @@ type Raft struct {
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
-	dead      int32               // set by Kill()
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	// State: follower : 1 , candidate: 2 leader: 3
-	state int
 
-	// Persistent state on all servers
-	currentTerm int
-	votedFor    int
-	logs        []LogEntry
-
-	// Volatile state on all servers.
-	commitIndex int
-	lastApplied int
-
-	// Volatile state on leader.
-	nextIndex  []int
-	matchIndex []int
-
-	// Leader election.
-	lastTimeRecHeartBeat int64
-
-	leaderElectionCond *sync.Cond
-	heartBeatCond      *sync.Cond
-}
-
-func (rf *Raft) back2Follower(term int) {
-	rf.currentTerm = term
-	rf.state = FOLLOWER
-	rf.votedFor = -1
-	rf.leaderElectionCond.Signal()
-}
-
-func (rf *Raft) Vote() {
-	// 如果RPC 超时（比如网络不可达），可能造成的一个问题是，当前 candidate记为c1(term = t) 已经获得了足够的票
-	// 但是仍然在等待超时的 rpc，在这期间另外一个已经给 candidate(term = t) 投票了的 server
-	// 超时，成为new candidate记为 c2(term = t+1), 并且 c2向 c1发起投票，c1给 c2投票，此时
-	// c1 的 term 变为 t+1, 然后 c1 的 vote 返回 c1 成为 leader，导致在 term t+1 有两个 leader。(相当于 c1在 t+1时
-	// 即给自己投票，又给 c2投票了，但是 raft 要保证在一个term 内只能给一个 candidate 投票)
-	// 此处用到的解决办法是给 Vote()整个函数加锁，放置其他函数(RequstVOte) 修改 term
-	// 这样 c2(term = t+1) 向 c1(term = t) 请求投票时， 由于 vote() 占用了锁，所以 c1 的requestvote 需要等待 Vote()
-	// 返回，当 vote 返回时 c1成为了 term t 的 leader, 然后request vote 取得锁，c1(term = t) 给 c2(term = t+ 1)投票
-	// c1的 term 变为 t+1并降为 follower, c2成为t+1的 leader
-	// 但是 term t 就被浪费了
-	// 如果把 rpc 的超时返回时间设置的更加小（小于 leader election timeout），则可以尽量避免这种情况
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	rf.state = CANDIDATE
-	rf.currentTerm += 1
-	rf.votedFor = rf.me
-	// rf.mu.Unlock()
-	args := RequestVoteArgs{
-		Term:        rf.currentTerm,
-		CandidateId: rf.me,
-		// TODO, 不考虑 safety 的时候暂时用不上。
-		LastLogIndex: 0,
-		LastLogTerm:  0,
-	}
-
-	requestVoteReplyCh := make(chan RequestVoteReply, len(rf.peers))
-	var wg sync.WaitGroup
-	for i := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-		wg.Add(1)
-		go func(serverId int) {
-			defer wg.Done()
-			var reply RequestVoteReply
-			respCh := make(chan struct{})
-			go func() {
-				rf.sendRequestVote(serverId, &args, &reply)
-				respCh <- struct{}{}
-			}()
-			select {
-			case <-time.After(200 * time.Millisecond):
-				return
-			case <-respCh:
-				requestVoteReplyCh <- reply
-			}
-		}(i)
-	}
-
-	go func() {
-		// 等待所有 requestVote 请求发送完毕（成功，或者超时）
-		// 然后关闭通道。
-		wg.Wait()
-		close(requestVoteReplyCh)
-	}()
-	voteCount := 1
-	for rply := range requestVoteReplyCh {
-		if rply.Term > rf.currentTerm {
-			rf.back2Follower(rply.Term)
-			return
-		}
-		if rply.VoteGranted {
-			voteCount += 1
-		}
-	}
-	if voteCount > (len(rf.peers) / 2) {
-		DPrintf("<vote@%v>:becomes leader", rf)
-		rf.state = LEADER
-		rf.heartBeatCond.Signal()
-		return
-	}
-	DPrintf("<vote@%v>:election fail, #VOTE is %d", rf, voteCount)
-	// vote split 或者 没有当选，再次重置时钟
-	// 因为等待 request vote 返回的时间可能大于 leader election timeout，
-	// 当 vote（）返回时，该 server 会立即发起一次投票（如果其他人当选那么就是多余的）
-	rf.lastTimeRecHeartBeat = GetNowTime()
-	rf.back2Follower(rf.currentTerm)
-	return
 }
 
 // return currentTerm and whether this server
@@ -186,12 +63,10 @@ func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	term = rf.currentTerm
-	isleader = (rf.state == LEADER)
+	// Your code here (2A).
 	return term, isleader
 }
+
 
 //
 // save Raft's persistent state to stable storage,
@@ -208,6 +83,7 @@ func (rf *Raft) persist() {
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
 }
+
 
 //
 // restore previously persisted state.
@@ -231,16 +107,15 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
+
+
+
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	Term         int // candidate's term.
-	CandidateId  int // candidate requesting vote.
-	LastLogIndex int // index of candidate's last log entry.
-	LastLogTerm  int // term of candidate's last log entry.
 }
 
 //
@@ -249,66 +124,13 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	Term        int  // currentTerm, for candidate to update itself.
-	VoteGranted bool // true means candidate reveived vote.
-}
-
-func (rf *Raft) isMoreUpToDate(args *RequestVoteArgs) bool {
-	if len(rf.logs) == 0 {
-		return true
-	}
-	if args.LastLogTerm > rf.logs[len(rf.logs)-1].Term {
-		return true
-	} else if args.LastLogTerm == rf.logs[len(rf.logs)-1].Term {
-
-		if args.LastLogIndex > (len(rf.logs) - 1) {
-			return true
-		} else {
-			return false
-		}
-	} else {
-		return false
-	}
 }
 
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	// Your code here (2A, 2B).
-	DPrintf("<RequestVote@%v>: FROM [ID:%d, TERM:%d]",
-		rf, args.Term, rf.me, rf.currentTerm)
-
-	reply.Term = rf.currentTerm
-	reply.VoteGranted = false
-	rf.lastTimeRecHeartBeat = GetNowTime()
-	if args.Term < rf.currentTerm {
-		return
-	}
-
-	if !rf.isMoreUpToDate(args) {
-		return
-	}
-
-	if args.Term > rf.currentTerm {
-		DPrintf("<RequestVote@%v>:votes to [ID:%d, TERM:%d], with bigger Term",
-			rf, args.CandidateId, args.Term)
-		reply.VoteGranted = true
-		rf.back2Follower(args.Term)
-		rf.votedFor = args.CandidateId
-		return
-	}
-	// now rf.currentTerm == args.Term
-	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
-		DPrintf("<RequestVote@%v>: votes to [ID:%d, TERM:%d], rf.voteFor is %d, with same Term",
-			rf, args.CandidateId, args.Term, rf.votedFor)
-		reply.VoteGranted = true
-		rf.back2Follower(args.Term)
-		rf.votedFor = args.CandidateId
-		return
-	}
 }
 
 //
@@ -345,38 +167,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []LogEntry
-	LeaderCommit int
-}
-
-type AppendEntriesReply struct {
-	Term    int
-	Success bool
-}
-
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	// Your code here (2A, 2B).
-	DPrintf("<AppendEntries@%v>: from [ID:%d, TERM:%d], len(logs) is %d",
-		rf, args.LeaderId, args.Term, len(args.Entries))
-	rf.lastTimeRecHeartBeat = GetNowTime()
-	if rf.currentTerm < args.Term {
-		DPrintf("<AppendEntries@%v>, rf.currentTerm %d is samller than args.Term %d",
-			rf, rf.currentTerm, args.Term)
-		rf.back2Follower(args.Term)
-	}
-}
-
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
-}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -399,86 +189,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 
+
 	return index, term, isLeader
 }
 
 //
 // the tester calls Kill() when a Raft instance won't
-// be needed again. for your convenience, we supply
-// code to set rf.dead (without needing a lock),
-// and a killed() method to test rf.dead in
-// long-running loops. you can also add your own
-// code to Kill(). you're not required to do anything
-// about this, but it may be convenient (for example)
-// to suppress debug output from a Kill()ed instance.
+// be needed again. you are not required to do anything
+// in Kill(), but it might be convenient to (for example)
+// turn off debug output from this instance.
 //
 func (rf *Raft) Kill() {
-	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
-}
-
-func (rf *Raft) killed() bool {
-	z := atomic.LoadInt32(&rf.dead)
-	return z == 1
-}
-
-func (rf *Raft) startLeaderElectionDaemon() {
-	go rf.leaderElectionDaemon(400, 800)
-}
-
-func (rf *Raft) leaderElectionDaemon(left, right int64) {
-	for {
-
-		for rf.state != LEADER {
-			timeout := time.Duration(randInterval(left, right))
-			time.Sleep(timeout * time.Millisecond)
-			dur := GetNowTime() - rf.lastTimeRecHeartBeat
-			if dur > int64(timeout) {
-				rf.lastTimeRecHeartBeat = GetNowTime()
-				rf.Vote()
-			}
-		}
-
-		rf.leaderElectionCond.L.Lock()
-		rf.leaderElectionCond.Wait()
-	}
-}
-
-func randInterval(left, right int64) int64 {
-	return rand.Int63n(right-left) + left
-}
-
-func (rf *Raft) startHeartBeatDaemon() {
-	go rf.heartBeatDaemon()
-}
-
-func (rf *Raft) heartBeatDaemon() {
-	for {
-
-		for rf.state == LEADER {
-			args := AppendEntriesArgs{
-				Term:         rf.currentTerm,
-				LeaderId:     rf.me,
-				PrevLogIndex: -1,
-				PrevLogTerm:  -1,
-				Entries:      make([]LogEntry, 0),
-				LeaderCommit: -1,
-			}
-			for i := range rf.peers {
-				if i == rf.me {
-					continue
-				}
-				var reply AppendEntriesReply
-				go func(serverId int) {
-					rf.sendAppendEntries(serverId, &args, &reply)
-				}(i)
-			}
-			time.Sleep(HBPERIODIC * time.Millisecond)
-		}
-
-		rf.heartBeatCond.L.Lock()
-		rf.heartBeatCond.Wait()
-	}
 }
 
 //
@@ -500,23 +222,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-	// start of Raft initialization
-	rf.state = FOLLOWER
-	rf.currentTerm = 0
-	rf.votedFor = -1
-	rf.logs = make([]LogEntry, 0)
-	rf.commitIndex = -1
-	rf.lastApplied = -1
-	rf.nextIndex = make([]int, 0)
-	rf.matchIndex = make([]int, 0)
-	rf.lastTimeRecHeartBeat = GetNowTime()
-	rf.leaderElectionCond = sync.NewCond(new(sync.Mutex))
-	rf.heartBeatCond = sync.NewCond(new(sync.Mutex))
-	rf.startLeaderElectionDaemon()
-	rf.startHeartBeatDaemon()
-	// end of Raft initialization
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
 
 	return rf
 }
