@@ -38,7 +38,7 @@ const (
 	LEMAX = 300
 
 	// HB for heart beat
-	HBPERIOD = 120
+	HBPERIOD = 100
 )
 
 //
@@ -391,9 +391,10 @@ func (rf *Raft) eventLoop() {
 		select {
 		case <- rf.electionEventCh:
 			rf.mu.Lock()
+			// 目前正在进行一次选举，等选举完再进行下一次
+			go rf.startLeaderElection()
 			DPrintf("%v start leader election process", rf)
 			rf.mu.Unlock()
-			go rf.startLeaderElection()
 		case <- rf.heartBeatEventCh:
 			rf.mu.Lock()
 			DPrintf("%v send heart beat to peers", rf)
@@ -490,13 +491,6 @@ func (rf *Raft) sendRequestVote2peers(args RequestVoteArgs) {
 		}(server)
 	}
 	wg.Wait()
-	rf.mu.Lock()
-	// 该 term 的选举失败
-	if rf.currentTerm == args.Term && rf.state != LEADER {
-		rf.votedFor = -1
-		rf.switchState2(FOLLOWER)
-	}
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) sendHeartBeatToAll() {
@@ -537,7 +531,7 @@ func (rf *Raft) sendAppendEntriesToAll(term int, reason string) {
 			reply := AppendEntriesReply{}
 			ok := rf.sendAppendEntries(id, &args, &reply)
 			if !ok {
-				DPrintf("%v falied to get AppendEntries reply from %d", rf, id)
+				DPrintf("%v falied to get AppendEntries reply from %d, sended rpc in term %d", rf, id, term)
 				return
 			} else {
 				replyCh <- reply
@@ -563,7 +557,10 @@ func (rf *Raft) processAppendEntriesReply(callTerm int, replyCh chan AppendEntri
 	for r := range replyCh {
 		rf.mu.Lock()
 		if callTerm != rf.currentTerm {
+			DPrintf("%v get a out-of-date AppendEntries reply, call term is %d, now term is %d", rf, callTerm, rf.currentTerm)
 			// 这是一个过期的 reply, 不应该被处理
+			// 在 continue 之前释放锁， 否则 continue 就不会释放所
+			rf.mu.Unlock()
 			continue
 		}
 		if r.Term > rf.currentTerm {
