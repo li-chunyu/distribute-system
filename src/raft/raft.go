@@ -241,27 +241,53 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	DPrintf("%v recieve AppendEntries from %d", rf, args.LeaderId)
 
-	// invalid rpc call
-	if args.Term < rf.currentTerm {
-		DPrintf("%v, invalid AppendEntries reject.Reason: term mismatch, args.Term: %d, rf.currentTerm: %d",
-			rf, args.Term, rf.currentTerm)
-		reply.Term = rf.currentTerm
-		reply.Success = false
-		return
-	}
+	// 这是一个合法的 AppendEntries
+	if rf.currentTerm <= args.Term {
+		// 当前 term 小于参数中的 term，先更新 term
+		if rf.currentTerm < args.Term {
+			DPrintf("<AppendEntries>, %v has older term than (%d, %d), update it", rf, args.LeaderId, args.Term)
+			rf.currentTerm = args.Term
+			rf.setElectionTimeout()
+			// 重置 votedfor，以便于下次再投票
+			rf.votedFor = -1
+			rf.switchState2(FOLLOWER)
+		}
+		// now rf.currentTerm == args.Term
+		// 一致性检查通过
+		if len(rf.log) > args.PrevLogIndex &&
+			rf.log[args.PrevLogIndex].Term == args.Term {
 
-	rf.setElectionTimeout()
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.switchState2(FOLLOWER)
-	}
-	rf.switchState2(FOLLOWER)
-	reply.Success = true
+			rf.switchState2(FOLLOWER)
+
+			isMatch := true
+			nextIndex := args.PrevLogIndex + 1
+			end := len(rf.log) - 1
+			for i := 0; isMatch && i < len(args.Entries); i++ {
+				// args.Entries 比 rf.log 还长了不 match
+				if end < nextIndex+i {
+					isMatch = false
+				} else if args.Entries[i].Term != rf.log[nextIndex+i].Term {
+					isMatch = false
+				}
+			}
+
+			// 存在冲突才复制，不冲突不复制，防止截断 peer 的日志
+			if isMatch == false {
+				entries := make([]LogEntry, len(args.Entries))
+				copy(entries, args.Entries)
+				rf.log = append(rf.log[nextIndex:], entries)
+			}
+			DPrintf("<AppendEntries>, %v commitIndex %d, leader %d commitIndex %d",
+				rf, rf.commitIndex, args.LeaderId, args.LeaderCommit)
+			// TODO update commit index
+			// TODO applycond 状态机执行已经 commit 的状态
+		}
+	} // END rf.currentTerm <= args.Term
+
 	reply.Term = rf.currentTerm
+	reply.Success = false
+	rf.mu.Unlock()
 }
 
 //
@@ -550,6 +576,9 @@ func (rf *Raft) sendAppendEntriesToAll(term int, index int, commitIndex int, rea
 			nextIndex := rf.nextIndex[id]
 			prevLogIndex := nextIndex - 1
 			prevLogTerm := rf.log[prevLogIndex].Term
+			// TODO go 的切片是浅拷贝， 所以 entries 可能需要 copy 一下,
+			// entries := make([]LogEntries, len(rf.log[nextIndex : index+1]))
+			// copy(entries, rf.log[nextIndex : index+1])
 			entries := rf.log[nextIndex : index+1]
 
 			if nextIndex > (index + 1) {
